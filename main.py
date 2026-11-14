@@ -16,10 +16,6 @@ GOON_ROOM_CATEGORY_ID = 1571061360349937764  # Both Camera & Mic required
 MOVIE_ROOM_CATEGORY_ID = 1571061443460333729  # Only Camera required
 MUSIC_ROOM_CATEGORY_ID = 1571061845475721306  # Only Microphone required
 
-TAMBAYAN_CHANNEL_ID = (
-    1571083268445704262  # Replace with Tambayan Voice Channel ID
-)
-
 WARNING_DELAY = 60  # 1 minute before sending the warning DM (in seconds)
 GRACE_PERIOD = 300  # 5 minutes total grace period (in seconds)
 # =================================================
@@ -32,6 +28,15 @@ tracking_tasks = {}
 async def on_ready():
   print(f"[{bot.user.name}] is online and hunting!")
   print("Monitoring Steam Room categories with custom warning prompts...")
+
+
+@bot.event
+async def on_message(message: discord.Message):
+  # Ignore all messages from bots and any Direct Messages / replies to the bot
+  if message.author.bot or isinstance(message.channel, discord.DMChannel):
+    return
+
+  await bot.process_commands(message)
 
 
 def is_violating(member: discord.Member, target_category_id: int) -> bool:
@@ -101,20 +106,22 @@ async def on_voice_state_update(
 
 async def send_warning_prompt(member: discord.Member, category_id: int):
   """Sends the specific warning message depending on the category requirements."""
+  footer = "\n*(This is an automated message. Do not reply to this bot.)*"
+
   if category_id == GOON_ROOM_CATEGORY_ID:
     msg = (
         "🚨 **bad boi hunter:** You need to open your Camera and Microphone to"
-        " stay in this channel! You have 4 minutes left."
+        f" stay in this channel! You have 4 minutes left.{footer}"
     )
   elif category_id == MOVIE_ROOM_CATEGORY_ID:
     msg = (
         "🚨 **bad boi hunter:** You need to open your Camera to stay in this"
-        " channel! You have 4 minutes left."
+        f" channel! You have 4 minutes left.{footer}"
     )
   elif category_id == MUSIC_ROOM_CATEGORY_ID:
     msg = (
         "🚨 **bad boi hunter:** You need to open your Microphone to stay in"
-        " this channel! You have 4 minutes left."
+        f" this channel! You have 4 minutes left.{footer}"
     )
   else:
     return
@@ -122,7 +129,7 @@ async def send_warning_prompt(member: discord.Member, category_id: int):
   try:
     await member.send(msg)
   except discord.Forbidden:
-    pass  # User has DMs closed; fails silently without crashing the script
+    pass
 
 
 async def enforce_rules(member: discord.Member, target_category_id: int):
@@ -138,28 +145,21 @@ async def enforce_rules(member: discord.Member, target_category_id: int):
     # Step 2: Wait the remaining 4 minutes
     await asyncio.sleep(GRACE_PERIOD - WARNING_DELAY)
 
-    # Step 3: Re-verify after the full 5 minutes and move to Tambayan if still violating
+    # Step 3: Re-verify after the full 5 minutes and disconnect from voice if still violating
     if is_violating(member, target_category_id):
-      guild = member.guild
-      tambayan_channel = guild.get_channel(TAMBAYAN_CHANNEL_ID)
-
-      if not isinstance(tambayan_channel, discord.VoiceChannel):
-        print(
-            "[ERROR] TAMBAYAN_CHANNEL_ID is invalid or is not a Voice Channel."
-        )
-        return
-
       try:
         await member.move_to(
-            tambayan_channel,
+            None,
             reason=(
                 "Failed to meet category media requirements within 5 minutes."
             ),
         )
         try:
           await member.send(
-              "⚠️ **bad boi hunter:** You were moved to **Tambayan** because"
-              " the voice channel requirements were not met in time."
+              "⚠️ **bad boi hunter:** You were disconnected from the voice"
+              " channel because the requirements were not met in"
+              " time.\n*(This is an automated message. Do not reply to this"
+              " bot.)*"
           )
         except discord.Forbidden:
           pass
@@ -169,10 +169,10 @@ async def enforce_rules(member: discord.Member, target_category_id: int):
             " higher role / is Server Owner."
         )
       except discord.HTTPException as e:
-        print(f"[ERROR] Failed to move {member.name}: {e}")
+        print(f"[ERROR] Failed to disconnect {member.name}: {e}")
 
   except asyncio.CancelledError:
-    pass  # Timer canceled because they satisfied requirements or left
+    pass
   finally:
     if member.id in tracking_tasks:
       del tracking_tasks[member.id]
