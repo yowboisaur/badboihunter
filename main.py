@@ -18,7 +18,8 @@ MUSIC_ROOM_CATEGORY_ID = 1571061845475721306  # Only Microphone required
 
 WELCOME_CHANNEL_ID = 1571060347060625508  # Channel to kick violators into
 
-GRACE_PERIOD = 300  # 5 minutes (in seconds)
+WARNING_DELAY = 60  # 1 minute before sending the warning DM (in seconds)
+GRACE_PERIOD = 300  # 5 minutes total grace period (in seconds)
 # =================================================
 
 # Dictionary to track active timers: {user_id: asyncio.Task}
@@ -29,6 +30,29 @@ tracking_tasks = {}
 async def on_ready():
   print(f"[{bot.user.name}] is online and hunting!")
   print("Monitoring Steam Room categories with custom warning prompts...")
+
+
+def is_violating(member: discord.Member, target_category_id: int) -> bool:
+  """Helper function to check if the member is currently violating category rules."""
+  if (
+      not member.voice
+      or not member.voice.channel
+      or not member.voice.channel.category
+      or member.voice.channel.category.id != target_category_id
+  ):
+    return False
+
+  has_mic = not member.voice.self_mute and not member.voice.deaf
+  has_cam = member.voice.self_video
+
+  if target_category_id == GOON_ROOM_CATEGORY_ID:
+    return not (has_mic and has_cam)
+  elif target_category_id == MOVIE_ROOM_CATEGORY_ID:
+    return not has_cam
+  elif target_category_id == MUSIC_ROOM_CATEGORY_ID:
+    return not has_mic
+
+  return False
 
 
 @bot.event
@@ -47,32 +71,21 @@ async def on_voice_state_update(
       else None
   )
 
-  is_goon = current_category_id == GOON_ROOM_CATEGORY_ID
-  is_movie = current_category_id == MOVIE_ROOM_CATEGORY_ID
-  is_music = current_category_id == MUSIC_ROOM_CATEGORY_ID
+  is_target = current_category_id in (
+      GOON_ROOM_CATEGORY_ID,
+      MOVIE_ROOM_CATEGORY_ID,
+      MUSIC_ROOM_CATEGORY_ID,
+  )
 
-  # If they are in one of our target categories
-  if is_goon or is_movie or is_music:
-    has_mic = not after.self_mute and not after.deaf
-    has_cam = after.self_video
-
-    compliant = False
-    if is_goon:
-      compliant = has_mic and has_cam
-    elif is_movie:
-      compliant = has_cam
-    elif is_music:
-      compliant = has_mic
-
-    if compliant:
+  if is_target:
+    if not is_violating(member, current_category_id):
       if member.id in tracking_tasks:
         tracking_tasks[member.id].cancel()
         del tracking_tasks[member.id]
       return
 
-    # If not compliant, send the warning prompt and start/keep the timer
+    # Start the 5-minute enforcement timer if not already running
     if member.id not in tracking_tasks:
-      await send_warning_prompt(member, current_category_id)
       tracking_tasks[member.id] = asyncio.create_task(
           enforce_rules(member, current_category_id)
       )
@@ -89,17 +102,17 @@ async def send_warning_prompt(member: discord.Member, category_id: int):
   if category_id == GOON_ROOM_CATEGORY_ID:
     msg = (
         "🚨 **bad boi hunter:** You need to open your Camera and Microphone to"
-        " stay in this channel!"
+        " stay in this channel! You have 4 minutes left."
     )
   elif category_id == MOVIE_ROOM_CATEGORY_ID:
     msg = (
         "🚨 **bad boi hunter:** You need to open your Camera to stay in this"
-        " channel!"
+        " channel! You have 4 minutes left."
     )
   elif category_id == MUSIC_ROOM_CATEGORY_ID:
     msg = (
         "🚨 **bad boi hunter:** You need to open your Microphone to stay in"
-        " this channel!"
+        " this channel! You have 4 minutes left."
     )
   else:
     return
@@ -112,50 +125,36 @@ async def send_warning_prompt(member: discord.Member, category_id: int):
 
 async def enforce_rules(member: discord.Member, target_category_id: int):
   try:
-    # Wait for the 5-minute grace period
-    await asyncio.sleep(GRACE_PERIOD)
+    # Step 1: Wait 1 minute before sending the warning DM
+    await asyncio.sleep(WARNING_DELAY)
 
-    # Re-verify their state after 5 minutes
-    if (
-        member.voice
-        and member.voice.channel
-        and member.voice.channel.category
-        and member.voice.channel.category.id == target_category_id
-    ):
-      has_mic = not member.voice.self_mute and not member.voice.deaf
-      has_cam = member.voice.self_video
+    if is_violating(member, target_category_id):
+      await send_warning_prompt(member, target_category_id)
+    else:
+      return
 
-      is_goon = target_category_id == GOON_ROOM_CATEGORY_ID
-      is_movie = target_category_id == MOVIE_ROOM_CATEGORY_ID
-      is_music = target_category_id == MUSIC_ROOM_CATEGORY_ID
+    # Step 2: Wait the remaining 4 minutes (300 - 60 = 240 seconds)
+    await asyncio.sleep(GRACE_PERIOD - WARNING_DELAY)
 
-      still_violating = False
-      if is_goon and not (has_mic and has_cam):
-        still_violating = True
-      elif is_movie and not has_cam:
-        still_violating = True
-      elif is_music and not has_mic:
-        still_violating = True
+    # Step 3: Re-verify after the full 5 minutes and kick if still violating
+    if is_violating(member, target_category_id):
+      guild = member.guild
+      welcome_channel = guild.get_channel(WELCOME_CHANNEL_ID)
 
-      if still_violating:
-        guild = member.guild
-        welcome_channel = guild.get_channel(WELCOME_CHANNEL_ID)
+      await member.move_to(
+          welcome_channel,
+          reason=(
+              "Failed to meet category media requirements within 5 minutes."
+          ),
+      )
 
-        # Move them out of the voice channel and into the Welcome channel
-        await member.move_to(
-            welcome_channel,
-            reason=(
-                "Failed to meet category media requirements within 5 minutes."
-            ),
+      try:
+        await member.send(
+            "⚠️ **bad boi hunter:** You were kicked out of the voice channel"
+            " because the requirements were not met in time."
         )
-
-        try:
-          await member.send(
-              "⚠️ **bad boi hunter:** You were kicked out of the voice channel"
-              " because the requirements were not met in time."
-          )
-        except discord.Forbidden:
-          pass
+      except discord.Forbidden:
+        pass
 
   except asyncio.CancelledError:
     pass  # Timer canceled because they satisfied requirements or left
