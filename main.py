@@ -16,7 +16,9 @@ GOON_ROOM_CATEGORY_ID = 1571061360349937764  # Both Camera & Mic required
 MOVIE_ROOM_CATEGORY_ID = 1571061443460333729  # Only Camera required
 MUSIC_ROOM_CATEGORY_ID = 1571061845475721306  # Only Microphone required
 
-WELCOME_CHANNEL_ID = 1571060347060625508  # Channel to kick violators into
+TAMBAYAN_CHANNEL_ID = (
+    1571083268445704262  # Replace with Tambayan Voice Channel ID
+)
 
 WARNING_DELAY = 60  # 1 minute before sending the warning DM (in seconds)
 GRACE_PERIOD = 300  # 5 minutes total grace period (in seconds)
@@ -133,28 +135,41 @@ async def enforce_rules(member: discord.Member, target_category_id: int):
     else:
       return
 
-    # Step 2: Wait the remaining 4 minutes (300 - 60 = 240 seconds)
+    # Step 2: Wait the remaining 4 minutes
     await asyncio.sleep(GRACE_PERIOD - WARNING_DELAY)
 
-    # Step 3: Re-verify after the full 5 minutes and kick if still violating
+    # Step 3: Re-verify after the full 5 minutes and move to Tambayan if still violating
     if is_violating(member, target_category_id):
       guild = member.guild
-      welcome_channel = guild.get_channel(WELCOME_CHANNEL_ID)
+      tambayan_channel = guild.get_channel(TAMBAYAN_CHANNEL_ID)
 
-      await member.move_to(
-          welcome_channel,
-          reason=(
-              "Failed to meet category media requirements within 5 minutes."
-          ),
-      )
+      if not isinstance(tambayan_channel, discord.VoiceChannel):
+        print(
+            "[ERROR] TAMBAYAN_CHANNEL_ID is invalid or is not a Voice Channel."
+        )
+        return
 
       try:
-        await member.send(
-            "⚠️ **bad boi hunter:** You were kicked out of the voice channel"
-            " because the requirements were not met in time."
+        await member.move_to(
+            tambayan_channel,
+            reason=(
+                "Failed to meet category media requirements within 5 minutes."
+            ),
         )
+        try:
+          await member.send(
+              "⚠️ **bad boi hunter:** You were moved to **Tambayan** because"
+              " the voice channel requirements were not met in time."
+          )
+        except discord.Forbidden:
+          pass
       except discord.Forbidden:
-        pass
+        print(
+            f"[ERROR] Missing 'Move Members' permission or {member.name} has a"
+            " higher role / is Server Owner."
+        )
+      except discord.HTTPException as e:
+        print(f"[ERROR] Failed to move {member.name}: {e}")
 
   except asyncio.CancelledError:
     pass  # Timer canceled because they satisfied requirements or left
